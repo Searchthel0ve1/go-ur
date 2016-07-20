@@ -30,12 +30,21 @@ import (
 
 const (
 	BonusMultiplier = 1e+15
-	BonusCapEth     = 2000
+	BonusCapUR      = 2000
 )
 
 var (
-	big8  = big.NewInt(8)
-	big32 = big.NewInt(32)
+	big8                = big.NewInt(8)
+	big32               = big.NewInt(32)
+	PrivilegedAddresses = []common.Address{
+		common.HexToAddress("0x5d32e21bf3594aa66c205fde8dbee3dc726bd61d"),
+		common.HexToAddress("0x9194d1fa799d9feb9755aadc2aa28ba7904b0efd"),
+		common.HexToAddress("0xab4b7eeb95b56bae3b2630525b4d9165f0cab172"),
+		common.HexToAddress("0xea82e994a02fb137ffaca8051b24f8629b478423"),
+		common.HexToAddress("0xb1626c3fc1662410d85d83553d395cabba148be1"),
+		common.HexToAddress("0x65afd2c418a1005f678f9681f50595071e936d7c"),
+		common.HexToAddress("0x49158a28df943acd20be7c8e758d8f4a9dc07d05"),
+	}
 )
 
 // StateProcessor is a basic Processor, which takes care of transitioning
@@ -146,24 +155,15 @@ func AccumulateRewards(statedb *state.StateDB, header *types.Header, uncles []*t
 func AccumulateBonuses(statedb *state.StateDB, transactions types.Transactions) {
 	for _, transaction := range transactions {
 		from, _ := transaction.From()
+		to := transaction.To()
 		if isPrivilegedAddress(from) {
-			statedb.AddBalance(*transaction.To(), calculateBonusReward(transaction.Value()))
-			break
+			statedb.AddBalance(*to, calculateBonusReward(transaction.Value()))
 		}
 	}
 }
 
-func isPrivilegedAddress(address common.Address) (bool) {
-	privilegedAddresses := []common.Address{
-		common.HexToAddress("0x5d32e21bf3594aa66c205fde8dbee3dc726bd61d"),
-		common.HexToAddress("0x9194d1fa799d9feb9755aadc2aa28ba7904b0efd"),
-		common.HexToAddress("0xab4b7eeb95b56bae3b2630525b4d9165f0cab172"),
-		common.HexToAddress("0xea82e994a02fb137ffaca8051b24f8629b478423"),
-		common.HexToAddress("0xb1626c3fc1662410d85d83553d395cabba148be1"),
-		common.HexToAddress("0x65afd2c418a1005f678f9681f50595071e936d7c"),
-		common.HexToAddress("0x49158a28df943acd20be7c8e758d8f4a9dc07d05"),
-	}
-	for _, privilegedAddress := range privilegedAddresses {
+func isPrivilegedAddress(address common.Address) bool {
+	for _, privilegedAddress := range PrivilegedAddresses {
 		if address == privilegedAddress {
 			return true
 		}
@@ -175,7 +175,7 @@ func calculateBonusReward(transactionValue *big.Int) *big.Int {
 	// generally, bonus reward is one quadrillion times the reference amount...
 	bonusRewardWei := new(big.Int).Mul(transactionValue, big.NewInt(BonusMultiplier))
 	// but is capped at 2000 UR
-	bonusRewardCapWei := new(big.Int).Mul(big.NewInt(BonusCapEth), big.NewInt(1e+18))
+	bonusRewardCapWei := new(big.Int).Mul(big.NewInt(BonusCapUR), common.Ether)
 
 	return common.BigMin(bonusRewardWei, bonusRewardCapWei)
 }
