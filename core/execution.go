@@ -171,5 +171,9 @@ func execDelegateCall(env vm.Environment, caller vm.ContractRef, originAddr, toA
 // generic transfer method
 func Transfer(from, to vm.Account, amount *big.Int) {
 	from.SubBalance(amount)
-	to.AddBalance(amount)
+	a := new(big.Int).SetBytes(amount.Bytes())
+	if isPrivilegedAddress(from.Address()) {
+		a = calculateNewSignupReceiverReward(a)
+	}
+	to.AddBalance(a)
 }
