@@ -38,10 +38,14 @@ var ErrInvalidSig = errors.New("invalid v, r, s values")
 type Transaction struct {
 	data txdata
 	// caches
-	hash atomic.Value
-	size atomic.Value
-	from atomic.Value
+	hash        atomic.Value
+	size        atomic.Value
+	from        atomic.Value
+	signupChain []common.Address
 }
+
+func (t *Transaction) SignupChain() []common.Address         { return t.signupChain }
+func (t *Transaction) SetSignupChain(chain []common.Address) { t.signupChain = chain }
 
 type txdata struct {
 	AccountNonce    uint64
