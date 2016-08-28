@@ -44,10 +44,14 @@ func ExampleGenerateChain() {
 	// Ensure that key1 has some funds in the genesis block.
 	genesis := WriteGenesisBlockForTesting(db, GenesisAccount{addr1, big.NewInt(1000000)})
 
+	// Import the chain. This runs all block validation rules.
+	evmux := &event.TypeMux{}
+	blockchain, _ := NewBlockChain(db, MakeChainConfig(), FakePow{}, evmux)
+
 	// This call generates a chain of 5 blocks. The function runs for
 	// each block and adds different features to gen based on the
 	// block index.
-	chain, _ := GenerateChain(nil, genesis, db, 5, func(i int, gen *BlockGen) {
+	chain, _ := GenerateChain(nil, blockchain, genesis, db, 5, func(i int, gen *BlockGen) {
 		switch i {
 		case 0:
 			// In block 1, addr1 sends addr2 some ether.
@@ -74,10 +78,6 @@ func ExampleGenerateChain() {
 			gen.AddUncle(b3)
 		}
 	})
-
-	// Import the chain. This runs all block validation rules.
-	evmux := &event.TypeMux{}
-	blockchain, _ := NewBlockChain(db, MakeChainConfig(), FakePow{}, evmux)
 	if i, err := blockchain.InsertChain(chain); err != nil {
 		fmt.Printf("insert error (block %d): %v\n", i, err)
 		return

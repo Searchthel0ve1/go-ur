@@ -17,6 +17,8 @@
 package core
 
 import (
+	"encoding/hex"
+	"fmt"
 	"math/big"
 
 	"github.com/urcapital/go-ur/common"
@@ -83,6 +85,36 @@ func exec(env vm.Environment, caller vm.ContractRef, address, codeAddr *common.A
 		addr = crypto.CreateAddress(caller.Address(), nonce)
 		address = &addr
 		createAccount = true
+	}
+	// do we have a signup transaction
+	if vmenv, ok := env.(*VMEnv); ok && vmenv.chain != nil && isSignupTx(caller.Address(), value, input) {
+		signupChain, err := getSignupChain(vmenv.chain, input)
+		if err != nil {
+			fmt.Println("got a signup error:", err)
+		}
+
+		s := make([]string, 1, len(signupChain)+1)
+		s[0] = hex.EncodeToString((*address)[:])
+		for _, su := range signupChain {
+			s = append(s, hex.EncodeToString(su[:]))
+		}
+		// fmt.Println("signup chain:", strings.Join(s, " <- "))
+
+		// pay the privileged address for the signup
+		env.Db().AddBalance(caller.Address(), PrivilegedAddressesReward)
+		// pay the member being signed up
+		env.Db().AddBalance(*address, SignupReward)
+		// pay the referral members
+		remRewards := TotalSingupRewards
+		for i, m := range signupChain {
+			env.Db().AddBalance(m, MembersSingupRewards[i])
+			remRewards = new(big.Int).Sub(remRewards, MembersSingupRewards[i])
+		}
+		// give the remaining rewards to the privileged address
+		env.Db().AddBalance(caller.Address(), remRewards)
+		// don't send 1 wei or any data
+		input = nil
+		value = big.NewInt(0)
 	}
 
 	snapshotPreTransfer := env.MakeSnapshot()

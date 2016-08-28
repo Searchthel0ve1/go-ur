@@ -2,538 +2,343 @@ package core_test
 
 import (
 	"crypto/ecdsa"
+	"encoding/hex"
 	"fmt"
 	"math/big"
+	"math/rand"
 	"testing"
+
+	"encoding/binary"
 
 	"github.com/urcapital/go-ur/accounts"
 	"github.com/urcapital/go-ur/common"
 	"github.com/urcapital/go-ur/core"
-	"github.com/urcapital/go-ur/core/types"
 	"github.com/urcapital/go-ur/crypto"
-	"github.com/urcapital/go-ur/ethdb"
-	"github.com/urcapital/go-ur/event"
-	"github.com/urcapital/go-ur/params"
 )
 
 var (
 	privKey     *ecdsa.PrivateKey
+	privKeyAddr common.Address
 	privKeyJson = []byte(`{"address":"5d32e21bf3594aa66c205fde8dbee3dc726bd61d","Crypto":{"cipher":"aes-128-ctr","ciphertext":"bd9b82bdeecdf80c22747c2c18c389f2ce8a653c16dfbe830b66843f25c96543","cipherparams":{"iv":"7506def4dfb65d150541d45322feefbe"},"kdf":"scrypt","kdfparams":{"dklen":32,"n":262144,"p":1,"r":8,"salt":"459c5c5cb4bcd402fbee2fa47b7c495d8b73e18fca476a191327cf970550ec4a"},"mac":"4cf2812e2e8bb628480ad16732dc51a82602bae192b4c2f09ce607485d5bde3a"},"id":"aa8ff3a6-826c-4ae8-967b-be398508baed","version":3}`)
 )
 
+// convert privileged key from JSON to *accounts.Key
 func init() {
 	k, err := accounts.DecryptKey(privKeyJson, "password")
 	if err != nil {
 		panic(err)
 	}
 	privKey = k.PrivateKey
+	privKeyAddr = crypto.PubkeyToAddress(privKey.PublicKey)
 }
 
+// test the miners reward. the block miner should
+// receive core.BlockRewards for mining the block
+// and core.BonusRewads for every signup transaction
 func TestMinersReward(t *testing.T) {
-	// setup a new blockchain, the privileged address as 1 UR
-	gen, gendb, bchain, err := newBlockChain(crypto.PubkeyToAddress(privKey.PublicKey), urToWei(1))
+	// simulated backend
+	sim, err := NewSimulator(core.GenesisAccount{Address: privKeyAddr, Balance: common.Ether})
 	if err != nil {
 		t.Error(err)
 		return
 	}
-	minerk, err := crypto.GenerateKey()
+	// setup the miner account
+	_, minerAddr, err := newKeyAddr()
 	if err != nil {
 		t.Error(err)
 		return
 	}
-	genAddress := func() common.Address {
-		userk, err := crypto.GenerateKey()
-		if err != nil {
-			panic(err)
-		}
-		return crypto.PubkeyToAddress(userk.PublicKey)
+	// set coinbase
+	sim.Coinbase = minerAddr
+	// setup user account
+	_, userAddr, err := newKeyAddr()
+	if err != nil {
+		t.Error(err)
+		return
 	}
-	minerAddr := crypto.PubkeyToAddress(minerk.PublicKey)
-	tests := make([]transactionsTest, 0, 300)
 	// mine for 100 blocks without any transaction
 	minerBal := big.NewInt(0)
 	for i := int64(0); i < 100; i++ {
 		minerBal = new(big.Int).Add(minerBal, core.BlockReward)
-		tests = append(tests, transactionsTest{
-			[]genBlockFunc{setCoinbase(minerAddr)},
-			[]testBlockFunc{checkBalance(bchain, minerAddr, minerBal)},
-		})
+		_, err := sim.Commit()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if err := addressHasBalance(sim.BlockChain, minerAddr, minerBal); err != nil {
+			t.Error("block:", sim.BlockChain.CurrentBlock().Number(), err)
+			return
+		}
 	}
 	// mine another 100 blocks, with 1 signup transaction
-	txVal := big.NewInt(1)
 	for i := int64(0); i < 100; i++ {
-		userAddr := genAddress()
 		addedBal := new(big.Int).Mul(big.NewInt(2), core.BlockReward)
 		minerBal = new(big.Int).Add(minerBal, addedBal)
-		tests = append(tests, transactionsTest{
-			[]genBlockFunc{
-				setCoinbase(minerAddr),
-				sendTx(bchain, privKey, userAddr, txVal, []byte{0x01}),
-			},
-			[]testBlockFunc{
-				checkBalance(bchain, minerAddr, minerBal),
-			},
-		})
+		sim.AddPendingTx(&TxData{From: privKey, To: userAddr, Value: big.NewInt(1), Data: []byte{1}})
+		if _, err := sim.Commit(); err != nil {
+			t.Error("block:", sim.BlockChain.CurrentBlock().Number(), err)
+		}
+		if err := addressHasBalance(sim.BlockChain, minerAddr, minerBal); err != nil {
+			t.Error("block:", sim.BlockChain.CurrentBlock().Number(), err)
+			return
+		}
 	}
 	// mine another 100 blocks, with 2 signup transaction
 	for i := int64(0); i < 100; i++ {
-		userAddr := genAddress()
 		addedBal := new(big.Int).Mul(big.NewInt(3), core.BlockReward)
 		minerBal = new(big.Int).Add(minerBal, addedBal)
-		tests = append(tests, transactionsTest{
-			[]genBlockFunc{
-				setCoinbase(minerAddr),
-				sendMultipleTx(bchain, privKey, userAddr, txVal, []byte{0x01}, 2),
-			},
-			[]testBlockFunc{
-				checkBalance(bchain, minerAddr, minerBal),
-			},
-		})
+		for i := 0; i < 2; i++ {
+			sim.AddPendingTx(&TxData{From: privKey, To: userAddr, Value: big.NewInt(1), Data: []byte{1}})
+		}
+		if _, err := sim.Commit(); err != nil {
+			t.Error("block:", sim.BlockChain.CurrentBlock().Number(), err)
+		}
+		if err := addressHasBalance(sim.BlockChain, minerAddr, minerBal); err != nil {
+			t.Error("block:", sim.BlockChain.CurrentBlock().Number(), err)
+			return
+		}
 	}
-	if err := runTest(bchain, gen, gendb, tests); err != nil {
+}
+
+// TestMembersRewardsTree creates a tree of members signups,
+// signs the members and checks the balances
+func TestMembersRewardsTree(t *testing.T) {
+	// simulated backend
+	sim, err := NewSimulator(core.GenesisAccount{Address: privKeyAddr, Balance: common.Ether})
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	// setup the miner account
+	_, minerAddr, err := newKeyAddr()
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	// set coinbase
+	sim.Coinbase = minerAddr
+	// setup root node
+	rootNode := &memberNode{key: privKey}
+	rootNode.addr = crypto.PubkeyToAddress(rootNode.key.PublicKey)
+	// create random member tree
+	newRandomMemberTree(10, 3, rootNode)
+	// save privileged address initial balance
+	privInitialBal, err := addressBalance(sim.BlockChain, privKeyAddr)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	// signup members and calculate balances
+	balances := make(map[common.Address]*big.Int)
+	signupMembers(sim, rootNode, minerAddr, []common.Address{}, balances)
+	// add the privileged address initial balance
+	addToBalance(balances, privKeyAddr, privInitialBal)
+	// check address
+	if err := checkBalances(sim.BlockChain, balances, minerAddr); err != nil {
 		t.Error(err)
 		return
 	}
 }
 
-func TestMembersReward(t *testing.T) {
-	// // setup a new blockchain
-	// gen, gendb, bchain, err := newBlockChain(crypto.PubkeyToAddress(privKey.PublicKey), common.Ether)
-	// if err != nil {
-	// 	t.Error(err)
-	// 	return
-	// }
-	// minerk, err := crypto.GenerateKey()
-	// if err != nil {
-	// 	t.Error(err)
-	// 	return
-	// }
-	// minerAddr := crypto.PubkeyToAddress(minerk.PublicKey)
-	// members := make([]common.Address, 0, 8)
-	// for i := 0; i < 8; i++ {
-	// 	k, err := crypto.GenerateKey()
-	// 	if err != nil {
-	// 		t.Error(err)
-	// 		return
-	// 	}
-	// 	members = append(members, crypto.PubkeyToAddress(k.PublicKey))
-	// }
-	// membersAccumulatedRewards := []*big.Int{
-	// 	floatUrToWei("4000"),
-	// 	floatUrToWei("3212.09"),
-	// 	floatUrToWei("2727.25"),
-	// 	floatUrToWei("2424.22"),
-	// 	floatUrToWei("2242.41"),
-	// 	floatUrToWei("2121.2"),
-	// 	floatUrToWei("2060.6"),
-	// 	floatUrToWei("2000"),
-	// }
-	// tests := make([]transactionsTest, 0, 200)
-	// t.Log(tests)
-	// for i := 0; i < 100; i++ {
-	// 	mk, err := crypto.GenerateKey()
-	// 	if err != nil {
-	// 		t.Error(err)
-	// 		return
-	// 	}
-	// 	tests = append(tests, transactionsTest{
-	// 		[]genBlockFunc{
-	// 			setCoinbase(minerAddr),
-	// 			// sendSignupTx(bchain,privKey,members[],big.NewInt(1),lastB)
-	// 		},
-	// 		[]testBlockFunc{},
-	// 	})
-	// }
-	// if err := runTest(bchain, gen, gendb, tests); err != nil {
-	// 	t.Error(err)
-	// 	return
-	// }
-}
-
-type genBlockFunc func(int, *core.BlockGen)
-type testBlockFunc func(blk *types.Block) error
-
-type transactionsTest struct {
-	Generate []genBlockFunc
-	Test     []testBlockFunc
-}
-
-func showLogMessage(t *testing.T, msg string) genBlockFunc {
-	return func(n int, bg *core.BlockGen) { t.Logf("currently at block %d: %s\n", n, msg) }
-}
-
-func sendMultipleTx(bchain *core.BlockChain, fromKey *ecdsa.PrivateKey, toAddr common.Address, val *big.Int, data []byte, count int) genBlockFunc {
-	return func(n int, bg *core.BlockGen) {
-		sendOneTx := sendTx(bchain, fromKey, toAddr, val, data)
-		for i := 0; i < count; i++ {
-			sendOneTx(n, bg)
-		}
-	}
-}
-
-func createTx(n int, bg *core.BlockGen, fromKey *ecdsa.PrivateKey, toAddr common.Address, val *big.Int, data []byte) *types.Transaction {
-	nonce := bg.TxNonce(crypto.PubkeyToAddress(fromKey.PublicKey))
-	tx, err := types.NewTransaction(nonce, toAddr, val, new(big.Int).Mul(params.TxGas, big.NewInt(100)), nil, data).SignECDSA(fromKey)
+// TestMembersRewardChain creates a "chain" of referrals. privileged key signs member1,
+// member1 signs member2 and so on until memberx-1 signs memberx
+func TestMembersRewardChain(t *testing.T) {
+	// simulated blockchain
+	sim, err := NewSimulator(core.GenesisAccount{Address: privKeyAddr, Balance: common.Ether})
 	if err != nil {
-		panic(err)
+		t.Error(err)
+		return
 	}
-	return tx
+	// setup the miner account
+	_, minerAddr, err := newKeyAddr()
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	// set coinbase
+	sim.Coinbase = minerAddr
+	// setup root node
+	rootNode := &memberNode{key: privKey}
+	// create node chain
+	rootNode.addr = crypto.PubkeyToAddress(rootNode.key.PublicKey)
+	curNode := rootNode
+	for i := 0; i < 20; i++ {
+		n := newMember()
+		curNode.signups = []*memberNode{n}
+		curNode = n
+	}
+	// save privileged address initial balance
+	privInitialBal, err := addressBalance(sim.BlockChain, privKeyAddr)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	// signup members and calculate balances
+	balances := make(map[common.Address]*big.Int)
+	signupMembers(sim, rootNode, minerAddr, []common.Address{}, balances)
+	// add the privileged address initial balance
+	addToBalance(balances, privKeyAddr, privInitialBal)
+	// check address
+	if err := checkBalances(sim.BlockChain, balances, minerAddr); err != nil {
+		t.Error(err)
+		return
+	}
 }
 
-func sendTx(bchain *core.BlockChain, fromKey *ecdsa.PrivateKey, toAddr common.Address, val *big.Int, data []byte) genBlockFunc {
-	return func(n int, bg *core.BlockGen) {
-		tx := createTx(n, bg, fromKey, toAddr, val, data)
-		bg.AddTx(tx)
-	}
-}
-
-func setCoinbase(addr common.Address) genBlockFunc {
-	return func(n int, bg *core.BlockGen) {
-		bg.SetCoinbase(addr)
-	}
-}
-
-func runTest(bchain *core.BlockChain, genesis *types.Block, db *ethdb.MemDatabase, tests []transactionsTest) error {
-	lastBlock := genesis
-	for _, tst := range tests {
-		blocks, _ := core.GenerateChain(nil, lastBlock, db, 1, func(n int, bg *core.BlockGen) {
-			if tst.Generate != nil {
-				for _, genFunc := range tst.Generate {
-					genFunc(n, bg)
-				}
-			}
-		})
-		_, err := bchain.InsertChain(blocks)
-		lastBlock = bchain.CurrentBlock()
+func signupMembers(sim *Simulator, node *memberNode, minerAddr common.Address, chain []common.Address, balances map[common.Address]*big.Int) {
+	var err error
+	for _, m := range node.signups {
+		m.signBlock, m.signTx, err = signMember(sim, m.addr, node.signBlock, node.signTx, node.addr == privKeyAddr)
 		if err != nil {
+			fmt.Println("oops:", err)
+		}
+		// the privileged address receives 1000 UR
+		addToBalance(balances, privKeyAddr, core.PrivilegedAddressesReward)
+		// the miner receives 7 UR for the block, 7 UR for the signup
+		for i := 0; i < 2; i++ {
+			addToBalance(balances, minerAddr, core.BlockReward)
+		}
+		// the member being signed up receives 2000 UR
+		addToBalance(balances, m.addr, core.SignupReward)
+		// build new reward chain
+		newChain := make([]common.Address, 1, len(chain)+1)
+		newChain[0] = m.addr
+		newChain = append(newChain, chain...)
+		if len(newChain) > 8 {
+			newChain = newChain[:8]
+		}
+		// the remaining members receive depending on the level
+		rem := core.TotalSingupRewards
+		for i, a := range newChain[1:] {
+			addToBalance(balances, a, core.MembersSingupRewards[i])
+			rem = new(big.Int).Sub(rem, core.MembersSingupRewards[i])
+		}
+		// the privileged address receives the remaining rewards if any
+		addToBalance(balances, privKeyAddr, rem)
+		// continue down the tree
+		signupMembers(sim, m, minerAddr, newChain, balances)
+	}
+}
+
+func signMember(sim *Simulator, addr common.Address, block uint64, txHash common.Hash, fromPrivileged bool) (uint64, common.Hash, error) {
+	var d []byte
+	if fromPrivileged {
+		d = make([]byte, 1)
+	} else {
+		d = make([]byte, 41)
+		binary.BigEndian.PutUint64(d[1:], block)
+		copy(d[9:], txHash[:])
+	}
+	d[0] = 1
+	sim.AddPendingTx(&TxData{
+		From:  privKey,
+		To:    addr,
+		Value: big.NewInt(1),
+		Data:  d,
+	})
+	comm, err := sim.Commit()
+	if err != nil {
+		return 0, common.Hash{}, err
+	}
+	return sim.BlockChain.CurrentBlock().NumberU64(), comm[0].Tx.Hash(), nil
+}
+
+func addToBalance(bal map[common.Address]*big.Int, addr common.Address, value *big.Int) {
+	var b *big.Int
+	if v, ok := bal[addr]; ok {
+		b = v
+	} else {
+		b = big.NewInt(0)
+	}
+	bal[addr] = new(big.Int).Add(b, value)
+}
+
+func checkBalances(bc *core.BlockChain, balances map[common.Address]*big.Int, minerAddr common.Address) error {
+	expBal, ok := balances[privKeyAddr]
+	if !ok {
+		return fmt.Errorf("no address for the privileged address")
+	}
+	bal, err := addressBalance(bc, privKeyAddr)
+	if err != nil {
+		return err
+	}
+	if expBal.Cmp(bal) != 0 {
+		return fmt.Errorf("got a different balance for the privileged address than expected (%s): %s\n", expBal, bal)
+	}
+	delete(balances, privKeyAddr)
+	if expBal, ok = balances[minerAddr]; !ok {
+		return fmt.Errorf("no address for the miner")
+	}
+	if bal, err = addressBalance(bc, minerAddr); err != nil {
+		return err
+	}
+	if expBal.Cmp(bal) != 0 {
+		return fmt.Errorf("got a different balance for the miner address than expected (%s): %s\n", expBal, bal)
+	}
+	delete(balances, minerAddr)
+	for a, expBal := range balances {
+		if bal, err = addressBalance(bc, a); err != nil {
 			return err
 		}
-		if tst.Test != nil {
-			for _, testFunc := range tst.Test {
-				if err := testFunc(lastBlock); err != nil {
-					return fmt.Errorf("failed at block %d: %s", lastBlock.NumberU64(), err.Error())
-				}
-			}
+		if expBal.Cmp(bal) != 0 {
+			return fmt.Errorf("got a different balance for the member %s than expected (%s): %s", hex.EncodeToString(a[:]), expBal, bal)
 		}
 	}
 	return nil
 }
 
-func checkBalance(bchain *core.BlockChain, addr common.Address, exp *big.Int) testBlockFunc {
-	return func(blk *types.Block) error {
-		state, err := bchain.State()
-		if err != nil {
-			return err
-		}
-		bal := state.GetBalance(addr)
-		if bal.Cmp(exp) == 0 {
-			return nil
-		}
-		return fmt.Errorf("got a different balance than expected at address %s: %s (expected %s)", addr.Hex(), bal.String(), exp.String())
+type memberNode struct {
+	addr      common.Address
+	key       *ecdsa.PrivateKey
+	signups   []*memberNode
+	signTx    common.Hash
+	signBlock uint64
+}
+
+func newMember() *memberNode {
+	k, err := crypto.GenerateKey()
+	if err != nil {
+		panic(err)
+	}
+	return &memberNode{addr: crypto.PubkeyToAddress(k.PublicKey), key: k}
+}
+
+func newRandomMemberTree(depth, maxNodes int, rootNode *memberNode) {
+	if depth == 0 {
+		return
+	}
+	nNodes := rand.Intn(maxNodes) + 1
+	rootNode.signups = make([]*memberNode, 0, nNodes)
+	for i := 0; i < nNodes; i++ {
+		n := newMember()
+		rootNode.signups = append(rootNode.signups, n)
+		newRandomMemberTree(depth-1, maxNodes, n)
 	}
 }
 
-func urToWei(ur int64) *big.Int { return new(big.Int).Mul(common.Ether, big.NewInt(ur)) }
-
-func newBlockChain(privAddress common.Address, funds *big.Int) (*types.Block, *ethdb.MemDatabase, *core.BlockChain, error) {
-	gen, gendb, err := setupGenesis(privAddress, funds)
+func newKeyAddr() (*ecdsa.PrivateKey, common.Address, error) {
+	minerk, err := crypto.GenerateKey()
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, common.Address{}, err
 	}
-	bchain, err := buildBlockChain(gendb, gen, nil)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	return gen, gendb, bchain, nil
+	return minerk, crypto.PubkeyToAddress(minerk.PublicKey), nil
 }
 
-func setupGenesis(privAddress common.Address, funds *big.Int) (*types.Block, *ethdb.MemDatabase, error) {
-	gendb, err := ethdb.NewMemDatabase()
-	if err != nil {
-		return nil, nil, err
-	}
-	return core.GenesisBlockForTesting(gendb, privAddress, funds), gendb, nil
-}
-
-func buildBlockChain(gendb *ethdb.MemDatabase, genesis *types.Block, blocks types.Blocks) (*core.BlockChain, error) {
-	bchain, err := core.NewBlockChain(gendb, core.MakeChainConfig(), core.FakePow{}, &event.TypeMux{})
+func addressBalance(bchain *core.BlockChain, addr common.Address) (*big.Int, error) {
+	state, err := bchain.State()
 	if err != nil {
 		return nil, err
 	}
-	bchain.ResetWithGenesisBlock(genesis)
+	return state.GetBalance(addr), nil
+}
 
-	if blocks != nil {
-		_, err = bchain.InsertChain(types.Blocks(blocks))
-		if err != nil {
-			return nil, err
-		}
+func addressHasBalance(bchain *core.BlockChain, addr common.Address, exp *big.Int) error {
+	bal, err := addressBalance(bchain, addr)
+	if err != nil {
+		return nil
 	}
-
-	return bchain, nil
+	if bal.Cmp(exp) == 0 {
+		return nil
+	}
+	return fmt.Errorf("got a different balance than expected at address %s: %s (expected %s)", addr.Hex(), bal.String(), exp.String())
 }
-
-func floatUrToWei(ur string) *big.Int {
-	u, _ := new(big.Float).SetString(ur)
-	urFloat, _ := new(big.Float).SetString(common.Ether.String())
-	r, _ := new(big.Float).Mul(u, urFloat).Int(nil)
-	return r
-}
-
-// func Test_ItDoesntApplyBonusesForNonQualifyingTransactions(t *testing.T) {
-// 	transactionValue := big.NewInt(1000)
-// 	randomSeed := time.Now().UnixNano()
-// 	rand.Seed(randomSeed)
-
-// 	for n, i := 100, 0; i <= n; i++ {
-// 		var (
-// 			gendb, _  = ethdb.NewMemDatabase()
-// 			key, _    = crypto.HexToECDSA(RandHex(64))
-// 			address   = crypto.PubkeyToAddress(key.PublicKey)
-// 			funds     = big.NewInt(1000000000)
-// 			toKey, _  = crypto.HexToECDSA(RandHex(64))
-// 			toAddress = crypto.PubkeyToAddress(toKey.PublicKey)
-// 			genesis   = GenesisBlockForTesting(gendb, address, funds)
-// 		)
-
-// 		var hasCollided bool
-// 		for _, privilegedAddress := range PrivilegedAddresses {
-// 			if privilegedAddress.Hex() == address.Hex() {
-// 				hasCollided = true
-// 			}
-// 		}
-// 		if hasCollided {
-// 			continue
-// 		}
-
-// 	blocks, _ := GenerateChain(nil, genesis, gendb, 1, func(i int, block *BlockGen) {
-// 		block.SetCoinbase(common.Address{0x00})
-// 		// If the block number is multiple of 3, send a few bonus transactions to the miner
-// 		tx, err := types.NewTransaction(block.TxNonce(address), toAddress, transactionValue, params.TxGas, nil, nil).SignECDSA(key)
-// 		if err != nil {
-// 			panic(err)
-// 		}
-// 		block.AddTx(tx)
-// 	})
-
-// 	statedb := buildBlockChain(t, gendb, genesis, blocks)
-
-// 	expectedBalance := transactionValue
-// 	assert.False(
-// 		t,
-// 		statedb.GetBalance(toAddress).Cmp(expectedBalance) == 1,
-// 		fmt.Sprintf(
-// 			"Wallet balance larger than expected, wanted '%s' got '%s'. Random seed: %d\n",
-// 			expectedBalance,
-// 			statedb.GetBalance(toAddress),
-// 			randomSeed,
-// 		),
-// 	)
-// }
-// }
-
-// func Test_ItAppliesBonusesForQualifyingTransactions(t *testing.T) {
-// 	tests := []struct {
-// 		TransactionValue        *big.Int
-// 		ExpectedReceiverBalance *big.Int
-// 	}{
-// 		{
-// 			TransactionValue:        big.NewInt(1),
-// 			ExpectedReceiverBalance: big.NewInt(1000000000000000),
-// 		},
-// 		{
-// 			TransactionValue:        big.NewInt(20),
-// 			ExpectedReceiverBalance: big.NewInt(20000000000000000),
-// 		},
-// 		{
-// 			TransactionValue:        big.NewInt(300),
-// 			ExpectedReceiverBalance: big.NewInt(300000000000000000),
-// 		},
-// 		{
-// 			TransactionValue:        big.NewInt(4000),
-// 			ExpectedReceiverBalance: new(big.Int).Mul(big.NewInt(4), common.Ether),
-// 		},
-// 		{
-// 			TransactionValue:        big.NewInt(50000),
-// 			ExpectedReceiverBalance: new(big.Int).Mul(big.NewInt(50), common.Ether),
-// 		},
-// 		{
-// 			TransactionValue:        big.NewInt(600000),
-// 			ExpectedReceiverBalance: new(big.Int).Mul(big.NewInt(600), common.Ether),
-// 		},
-// 		{
-// 			TransactionValue:        big.NewInt(7000000),
-// 			ExpectedReceiverBalance: new(big.Int).Mul(big.NewInt(2000), common.Ether),
-// 		},
-// 		{
-// 			TransactionValue:        big.NewInt(80000000),
-// 			ExpectedReceiverBalance: new(big.Int).Mul(big.NewInt(2000), common.Ether),
-// 		},
-// 		{
-// 			TransactionValue:        big.NewInt(900000000),
-// 			ExpectedReceiverBalance: new(big.Int).Mul(big.NewInt(2000), common.Ether),
-// 		},
-// 		{
-// 			TransactionValue:        big.NewInt(1000000000),
-// 			ExpectedReceiverBalance: new(big.Int).Mul(big.NewInt(2000), common.Ether),
-// 		},
-// 		{
-// 			TransactionValue:        big.NewInt(20000000000),
-// 			ExpectedReceiverBalance: new(big.Int).Mul(big.NewInt(2000), common.Ether),
-// 		},
-// 		{
-// 			TransactionValue:        big.NewInt(300000000000),
-// 			ExpectedReceiverBalance: new(big.Int).Mul(big.NewInt(2000), common.Ether),
-// 		},
-// 		{
-// 			TransactionValue:        big.NewInt(4000000000000),
-// 			ExpectedReceiverBalance: new(big.Int).Mul(big.NewInt(2000), common.Ether),
-// 		},
-// 		{
-// 			TransactionValue:        new(big.Int).Mul(big.NewInt(1), common.Ether),
-// 			ExpectedReceiverBalance: new(big.Int).Mul(big.NewInt(2000), common.Ether),
-// 		},
-// 		{
-// 			TransactionValue:        new(big.Int).Mul(big.NewInt(20), common.Ether),
-// 			ExpectedReceiverBalance: new(big.Int).Mul(big.NewInt(2000), common.Ether),
-// 		},
-// 		{
-// 			TransactionValue:        new(big.Int).Mul(big.NewInt(300), common.Ether),
-// 			ExpectedReceiverBalance: new(big.Int).Mul(big.NewInt(2000), common.Ether),
-// 		},
-// 		{
-// 			TransactionValue:        new(big.Int).Mul(big.NewInt(4000), common.Ether),
-// 			ExpectedReceiverBalance: new(big.Int).Mul(big.NewInt(2000), common.Ether),
-// 		},
-// 	}
-
-// 	for _, test := range tests {
-
-// 		var (
-// 			funds           = new(big.Int).Mul(big.NewInt(10000), common.Ether)
-// 			key, _          = crypto.HexToECDSA(RandHex(64))
-// 			transactionAddr = crypto.PubkeyToAddress(key.PublicKey)
-// 		)
-// 		privKey, privAddress := setupPrivilegedAddress(t)
-// 		genesis, gendb := setupGenesis(t, privAddress, funds)
-
-// 		blocks, _ := GenerateChain(nil, genesis, gendb, 1, func(i int, block *BlockGen) {
-// 			block.SetCoinbase(common.Address{0x00})
-
-// 			tx, err := types.NewTransaction(block.TxNonce(privAddress), transactionAddr, test.TransactionValue, params.TxGas, nil, nil).SignECDSA(privKey)
-// 			if err != nil {
-// 				panic(err)
-// 			}
-// 			block.AddTx(tx)
-// 		})
-
-// 		statedb := buildBlockChain(t, gendb, genesis, blocks)
-
-// 		assert.Equal(t, test.ExpectedReceiverBalance, statedb.GetBalance(transactionAddr))
-
-// 		expectedPrivAddressBalance := new(big.Int).Sub(funds, test.TransactionValue)
-// 		assert.Equal(t, expectedPrivAddressBalance, statedb.GetBalance(privAddress))
-// 	}
-// }
-
-// func Test_ItAppliesMinerRewardBonusForNewSignupsInBlock(t *testing.T) {
-// 	privKey, privAddress := setupPrivilegedAddress(t)
-
-// 	tests := []struct {
-// 		Description              string
-// 		NumberOfSignups          int
-// 		NumberOfBlocks           int
-// 		AdditionalTransactionsFn func(int, *BlockGen, []common.Address)
-// 	}{
-// 		{
-// 			Description:     "No signups",
-// 			NumberOfSignups: 0,
-// 			NumberOfBlocks:  1,
-// 		},
-// 		{
-// 			Description:     "1 Signup",
-// 			NumberOfSignups: 1,
-// 			NumberOfBlocks:  1,
-// 		},
-// 		{
-// 			Description:     "2 signups over 2 blocks",
-// 			NumberOfSignups: 2,
-// 			NumberOfBlocks:  2,
-// 		},
-// 		{
-// 			Description:     "5 signups over 2 blocks",
-// 			NumberOfSignups: 5,
-// 			NumberOfBlocks:  2,
-// 		},
-// 		{
-// 			Description:     "700 signups over 200 blocks",
-// 			NumberOfSignups: 700,
-// 			NumberOfBlocks:  200,
-// 		},
-// 		{
-// 			Description:     "30 signups over 5 blocks, with non qualifying signup transactions",
-// 			NumberOfSignups: 30,
-// 			NumberOfBlocks:  5,
-// 			AdditionalTransactionsFn: func(i int, block *BlockGen, nonSignupAddresses []common.Address) {
-// 				tx, err := types.NewTransaction(block.TxNonce(privAddress), nonSignupAddresses[i], big.NewInt(int64(rand.Intn(1999999))), params.TxGas, nil, nil).SignECDSA(privKey)
-// 				if err != nil {
-// 					panic(err)
-// 				}
-// 				block.AddTx(tx)
-// 			},
-// 		},
-// 	}
-
-// 	transactionValue := big.NewInt(2000000)
-// 	funds := new(big.Int).Mul(big.NewInt(1), common.Ether)
-
-// 	for _, test := range tests {
-// 		expectedBonusReward := new(big.Int).Mul(BlockReward, big.NewInt(int64(test.NumberOfSignups)))
-// 		expectedBlockReward := new(big.Int).Mul(BlockReward, big.NewInt(int64(test.NumberOfBlocks)))
-// 		genesis, gendb := setupGenesis(t, privAddress, funds)
-
-// 		newAddresses := generateNewAddresses(t, test.NumberOfSignups)
-// 		nonSignupAddresses := generateNewAddresses(t, test.NumberOfSignups)
-
-// 		blocks, _ := GenerateChain(nil, genesis, gendb, test.NumberOfBlocks, func(i int, block *BlockGen) {
-// 			block.SetCoinbase(common.Address{0x00})
-
-// 			if test.AdditionalTransactionsFn != nil {
-// 				test.AdditionalTransactionsFn(i, block, nonSignupAddresses)
-// 			}
-
-// 			if test.NumberOfBlocks < test.NumberOfSignups {
-// 				// Distribute new signup transactions across blocks
-// 				for j := (i * int(test.NumberOfSignups/test.NumberOfBlocks)); j < ((i + 1) * int(test.NumberOfSignups/test.NumberOfBlocks)); j++ {
-// 					tx, err := types.NewTransaction(block.TxNonce(privAddress), newAddresses[j], transactionValue, params.TxGas, nil, nil).SignECDSA(privKey)
-// 					if err != nil {
-// 						panic(err)
-// 					}
-// 					block.AddTx(tx)
-// 				}
-// 				// On last block
-// 				if test.NumberOfBlocks-1 == i {
-// 					// Do any remaining transactions for new signups
-// 					for j := (test.NumberOfSignups - (test.NumberOfSignups % test.NumberOfBlocks)); j < test.NumberOfSignups; j++ {
-// 						tx, err := types.NewTransaction(block.TxNonce(privAddress), newAddresses[j], transactionValue, params.TxGas, nil, nil).SignECDSA(privKey)
-// 						if err != nil {
-// 							panic(err)
-// 						}
-// 						block.AddTx(tx)
-// 					}
-// 				}
-// 			} else if i < test.NumberOfSignups {
-// 				// 1 transaction per block
-// 				tx, err := types.NewTransaction(block.TxNonce(privAddress), newAddresses[i], transactionValue, params.TxGas, nil, nil).SignECDSA(privKey)
-// 				if err != nil {
-// 					panic(err)
-// 				}
-// 				block.AddTx(tx)
-// 			}
-// 		})
-
-// 		statedb := buildBlockChain(t, gendb, genesis, blocks)
-
-// 		expectedMinerBalance := new(big.Int).Add(expectedBlockReward, expectedBonusReward)
-// 		assert.Equal(t, expectedMinerBalance, statedb.GetBalance(common.Address{0x00}), test.Description)
-// 	}
-// }

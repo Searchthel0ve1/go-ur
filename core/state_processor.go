@@ -17,7 +17,6 @@
 package core
 
 import (
-	"fmt"
 	"math/big"
 
 	"github.com/urcapital/go-ur/core/state"
@@ -66,6 +65,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		allLogs      vm.Logs
 		gp           = new(GasPool).AddGas(block.GasLimit())
 	)
+
 	// Mutate the the block and state according to any hard-fork specs
 	if p.config.DAOForkSupport && p.config.DAOForkBlock != nil && p.config.DAOForkBlock.Cmp(block.Number()) == 0 {
 		ApplyDAOHardFork(statedb)
@@ -91,12 +91,6 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 // ApplyTransactions returns the generated receipts and vm logs during the
 // execution of the state transition phase.
 func ApplyTransaction(config *ChainConfig, bc *BlockChain, gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *big.Int, cfg vm.Config) (*types.Receipt, vm.Logs, *big.Int, error) {
-	// fill in the signupChain if any
-	if IsSignupTransaction(tx) {
-		sc := SignupChain(bc, tx)
-		fmt.Printf(">>>> signup chain: %#+v\n", sc)
-		tx.SetSignupChain(sc)
-	}
 	_, gas, err := ApplyMessage(NewEnv(statedb, config, bc, tx, header, cfg), tx, gp)
 	if err != nil {
 		return nil, nil, nil, err
@@ -138,7 +132,7 @@ func AccumulateRewards(statedb *state.StateDB, header *types.Header, uncles []*t
 		r.Div(BlockReward, big32)
 		reward.Add(reward, r)
 	}
-	reward = CalculateNewSignupMinerRewards(reward, transactions, statedb)
+	reward = calculateNewSignupMinerRewards(reward, transactions, statedb)
 
 	statedb.AddBalance(header.Coinbase, reward)
 }

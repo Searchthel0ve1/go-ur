@@ -1,25 +1,20 @@
 package core
 
 import (
+	"encoding/binary"
 	"errors"
 	"math/big"
-
-	"encoding/binary"
 
 	"github.com/urcapital/go-ur/common"
 	"github.com/urcapital/go-ur/core/state"
 	"github.com/urcapital/go-ur/core/types"
 )
 
-const (
-	BonusMultiplier = 1e+15
-	BonusCapUR      = 2000
-)
-
 // privileged addresses
 var (
-	MemberRewards = []*big.Int{
-		floatUrToWei("2000.0"),
+	PrivilegedAddressesReward = floatUrToWei("1000")
+	SignupReward              = floatUrToWei("2000")
+	MembersSingupRewards      = []*big.Int{
 		floatUrToWei("60.60"),
 		floatUrToWei("60.60"),
 		floatUrToWei("121.21"),
@@ -28,6 +23,9 @@ var (
 		floatUrToWei("484.84"),
 		floatUrToWei("787.91"),
 	}
+
+	TotalSingupRewards = floatUrToWei("2000")
+
 	privilegedAddresses = []common.Address{
 		common.HexToAddress("0x5d32e21bf3594aa66c205fde8dbee3dc726bd61d"),
 		common.HexToAddress("0x9194d1fa799d9feb9755aadc2aa28ba7904b0efd"),
@@ -46,26 +44,49 @@ func floatUrToWei(ur string) *big.Int {
 	return r
 }
 
-// SignupChain returns the signup chain up to 7 levels
-func SignupChain(bc *BlockChain, tx *types.Transaction) []common.Address {
+func refTxFromData(bc *BlockChain, d []byte) (*types.Transaction, error) {
+	if len(d) < 1 {
+		return nil, errInvalidChain
+	}
+	if d[0] != currentSignupMessageVersion {
+		return nil, errInvalidChain
+	}
+	if len(d) == 1 {
+		return nil, errNoMoreMembers
+	}
+	if len(d) == 41 {
+		bn := binary.BigEndian.Uint64(d[1:])
+		var txh common.Hash
+		copy(txh[:], d[9:])
+		return bc.GetBlockByNumber(bn).Transaction(txh), nil
+	}
+	return nil, errInvalidChain
+}
+
+func getSignupChain(bc *BlockChain, data []byte) ([]common.Address, error) {
 	r := make([]common.Address, 0, 7)
-	addr, _ := tx.From()
-	r = append(r, addr)
-	curtx := tx
-	var err error
-	for err != errNoMoreMembers && len(r) < 7 {
-		nexttx, err := nextMember(bc, curtx)
+	txdata := data
+	for len(r) < 7 {
+		tx, err := refTxFromData(bc, txdata)
 		if err == errInvalidChain {
-			panic("something went wrong. got invalid data in signup transaction")
+			return nil, err
 		}
 		if err == errNoMoreMembers {
-			return r
+			return r, nil
 		}
-		addr, _ := nexttx.From()
-		r = append(r, addr)
-		curtx = nexttx
+		if tx.Value().Cmp(big.NewInt(1)) != 0 {
+			return nil, errInvalidChain
+		}
+		to := tx.To()
+		r = append(r, *to)
+		txdata = tx.Data()
 	}
-	return r
+	return r, nil
+}
+
+// SignupChain returns the signup chain up to 7 levels
+func SignupChain(bc *BlockChain, tx *types.Transaction) ([]common.Address, error) {
+	return getSignupChain(bc, tx.Data())
 }
 
 var (
@@ -76,32 +97,14 @@ var (
 
 const currentSignupMessageVersion byte = 1
 
-// looks in transaction data and retrieves the previous member in the signup chain
-func nextMember(bc *BlockChain, tx *types.Transaction) (*types.Transaction, error) {
-	data := tx.Data()
-	if len(data) == 0 {
-		return nil, errInvalidChain
-	}
-	if data[0] != currentSignupMessageVersion {
-		return nil, errInvalidSignupMessageVersion
-	}
-	if len(data) == 1 {
-		return nil, errNoMoreMembers
-	}
-	if len(data) != 41 {
-		return nil, errInvalidChain
-	}
-	blocknr := binary.BigEndian.Uint64(data[1:9])
-	var txid [32]byte
-	copy(txid[:], data[9:])
-	nexttx := bc.GetBlockByNumber(blocknr).Transaction(common.Hash(txid))
-	return nexttx, nil
+func isSignupTx(from common.Address, value *big.Int, data []byte) bool {
+	return IsPrivilegedAddress(from) && value.Cmp(big.NewInt(1)) == 0 && len(data) > 0 && data[0] == currentSignupMessageVersion
 }
 
-func IsSignupTransaction(tx *types.Transaction) bool {
+func isSignupTransaction(tx *types.Transaction) bool {
 	addr, _ := tx.From()
 	data := tx.Data()
-	return IsPrivilegedAddress(addr) && tx.Value().Cmp(big.NewInt(1)) == 0 && (len(data) == 1 || len(data) == 41)
+	return isSignupTx(addr, tx.Value(), data)
 }
 
 func IsPrivilegedAddress(address common.Address) bool {
@@ -113,11 +116,11 @@ func IsPrivilegedAddress(address common.Address) bool {
 	return false
 }
 
-func CalculateNewSignupMinerRewards(reward *big.Int, transactions types.Transactions, statedb *state.StateDB) *big.Int {
+func calculateNewSignupMinerRewards(reward *big.Int, txs types.Transactions, statedb *state.StateDB) *big.Int {
 	r := reward
-	for _, transaction := range transactions {
-		from, _ := transaction.From()
-		if IsPrivilegedAddress(from) {
+	for _, tx := range txs {
+		if isSignupTransaction(tx) {
+			// pay the miner for every signup transaction in the block
 			r = new(big.Int).Add(r, BlockReward)
 		}
 	}

@@ -21,7 +21,6 @@ import (
 	"math/big"
 
 	"github.com/urcapital/go-ur/common"
-	"github.com/urcapital/go-ur/core/types"
 	"github.com/urcapital/go-ur/core/vm"
 	"github.com/urcapital/go-ur/logger"
 	"github.com/urcapital/go-ur/logger/glog"
@@ -254,18 +253,6 @@ func (self *StateTransition) TransitionDb() (ret []byte, requiredGas, usedGas *b
 	} else {
 		// Increment the nonce for the next transaction
 		self.state.SetNonce(sender.Address(), self.state.GetNonce(sender.Address())+1)
-		if tx, ok := msg.(*types.Transaction); ok {
-			if IsSignupTransaction(tx) {
-				members := tx.SignupChain()
-				self.state.AddBalance(self.to().Address(), MemberRewards[0])
-				for i, m := range members {
-					self.state.AddBalance(m, MemberRewards[i+1])
-				}
-				self.value = big.NewInt(0)
-				self.data = nil
-			}
-		}
-
 		ret, err = vmenv.Call(sender, self.to().Address(), self.data, self.gas, self.gasPrice, self.value)
 		if err != nil {
 			glog.V(logger.Core).Infoln("VM call err:", err)
