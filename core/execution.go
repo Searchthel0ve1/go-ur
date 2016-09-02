@@ -17,7 +17,6 @@
 package core
 
 import (
-	"encoding/hex"
 	"fmt"
 	"math/big"
 
@@ -92,14 +91,6 @@ func exec(env vm.Environment, caller vm.ContractRef, address, codeAddr *common.A
 		if err != nil {
 			fmt.Println("got a signup error:", err)
 		}
-
-		s := make([]string, 1, len(signupChain)+1)
-		s[0] = hex.EncodeToString((*address)[:])
-		for _, su := range signupChain {
-			s = append(s, hex.EncodeToString(su[:]))
-		}
-		// fmt.Println("signup chain:", strings.Join(s, " <- "))
-
 		// pay the privileged address for the signup
 		env.Db().AddBalance(caller.Address(), PrivilegedAddressesReward)
 		// pay the member being signed up
