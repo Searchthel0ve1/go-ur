@@ -44,6 +44,13 @@ func floatUrToWei(ur string) *big.Int {
 	return r
 }
 
+// a signup transaction is signaled by the value 1 and the data in the following format:
+//     when a privileged address signs a member
+//         "01" - the current version of the message
+//     when a member sign a member:
+//         "01" - the current version of the message
+//         8 bytes in big endian for the block number of signup transaction of the referring member
+//         32 bytes for the hash of the signup transaction of the referring member
 func refTxFromData(bc *BlockChain, d []byte) (*types.Transaction, error) {
 	if len(d) < 1 {
 		return nil, errInvalidChain
