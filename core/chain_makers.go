@@ -203,7 +203,7 @@ func GenerateChain(config *ChainConfig, blockchain *BlockChain, parent *types.Bl
 		if gen != nil {
 			gen(i, b)
 		}
-		AccumulateRewards(statedb, h, b.uncles, b.txs)
+		AccumulateRewards(statedb, h, b.uncles)
 		root, err := statedb.Commit()
 		if err != nil {
 			panic(fmt.Sprintf("state write error: %v", err))

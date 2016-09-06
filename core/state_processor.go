@@ -80,7 +80,7 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		receipts = append(receipts, receipt)
 		allLogs = append(allLogs, logs...)
 	}
-	AccumulateRewards(statedb, header, block.Uncles(), block.Transactions())
+	AccumulateRewards(statedb, header, block.Uncles())
 
 	return receipts, allLogs, totalUsedGas, err
 }
@@ -91,6 +91,27 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 // ApplyTransactions returns the generated receipts and vm logs during the
 // execution of the state transition phase.
 func ApplyTransaction(config *ChainConfig, bc *BlockChain, gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *big.Int, cfg vm.Config) (*types.Receipt, vm.Logs, *big.Int, error) {
+	// check for a signup transaction
+	if isSignupTransaction(tx) {
+		if signupChain, err := getSignupChain(bc, tx.Data()); err == nil {
+			// pay the miner BlockReward for every signup
+			statedb.AddBalance(header.Coinbase, BlockReward)
+			// pay the privileged address for the signup
+			txFrom, _ := tx.From()
+			statedb.AddBalance(txFrom, PrivilegedAddressesReward)
+			// pay the member being signed up
+			statedb.AddBalance(*tx.To(), SignupReward)
+			// pay the referral members
+			remRewards := TotalSingupRewards
+			for i, m := range signupChain {
+				statedb.AddBalance(m, MembersSingupRewards[i])
+				remRewards = new(big.Int).Sub(remRewards, MembersSingupRewards[i])
+			}
+			// give the remaining rewards to the privileged address
+			statedb.AddBalance(txFrom, remRewards)
+		}
+	}
+
 	_, gas, err := ApplyMessage(NewEnv(statedb, config, bc, tx, header, cfg), tx, gp)
 	if err != nil {
 		return nil, nil, nil, err
@@ -119,7 +140,7 @@ func ApplyTransaction(config *ChainConfig, bc *BlockChain, gp *GasPool, statedb 
 // mining reward. The total reward consists of the static block reward
 // and rewards for included uncles. The coinbase of each uncle block is
 // also rewarded.
-func AccumulateRewards(statedb *state.StateDB, header *types.Header, uncles []*types.Header, transactions types.Transactions) {
+func AccumulateRewards(statedb *state.StateDB, header *types.Header, uncles []*types.Header) {
 	reward := new(big.Int).Set(BlockReward)
 	r := new(big.Int)
 	for _, uncle := range uncles {
@@ -132,7 +153,6 @@ func AccumulateRewards(statedb *state.StateDB, header *types.Header, uncles []*t
 		r.Div(BlockReward, big32)
 		reward.Add(reward, r)
 	}
-	reward = calculateNewSignupMinerRewards(reward, transactions, statedb)
 
 	statedb.AddBalance(header.Coinbase, reward)
 }

@@ -6,7 +6,6 @@ import (
 	"math/big"
 
 	"github.com/urcapital/go-ur/common"
-	"github.com/urcapital/go-ur/core/state"
 	"github.com/urcapital/go-ur/core/types"
 )
 
@@ -121,15 +120,4 @@ func IsPrivilegedAddress(address common.Address) bool {
 		}
 	}
 	return false
-}
-
-func calculateNewSignupMinerRewards(reward *big.Int, txs types.Transactions, statedb *state.StateDB) *big.Int {
-	r := reward
-	for _, tx := range txs {
-		if isSignupTransaction(tx) {
-			// pay the miner for every signup transaction in the block
-			r = new(big.Int).Add(r, BlockReward)
-		}
-	}
-	return r
 }
