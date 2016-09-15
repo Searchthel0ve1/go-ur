@@ -123,7 +123,7 @@ var severityName = []string{
 // matching vmodule filters.
 var trimPrefixes = []string{
 	"/github.com/urcapital/go-ur",
-	"/github.com/urcapital/urash",
+	"/github.com/urcapital/urhash",
 }
 
 func trimToImportPath(file string) string {

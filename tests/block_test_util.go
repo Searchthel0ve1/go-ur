@@ -26,7 +26,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/urcapital/urash"
+	"github.com/urcapital/urhash"
 	"github.com/urcapital/go-ur/common"
 	"github.com/urcapital/go-ur/core"
 	"github.com/urcapital/go-ur/core/state"

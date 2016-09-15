@@ -27,7 +27,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/urcapital/urash"
+	"github.com/urcapital/uhrash"
 	"github.com/urcapital/go-ur/common"
 	"github.com/urcapital/go-ur/core/state"
 	"github.com/urcapital/go-ur/core/types"

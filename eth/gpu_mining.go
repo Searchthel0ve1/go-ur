@@ -25,7 +25,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/urcapital/urash"
+	"github.com/urcapital/urhash"
 	"github.com/urcapital/go-ur/common"
 	"github.com/urcapital/go-ur/core/types"
 	"github.com/urcapital/go-ur/logger"

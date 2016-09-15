@@ -29,7 +29,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/urcapital/urash"
+	"github.com/urcapital/urhash"
 	"github.com/urcapital/go-ur/accounts"
 	"github.com/urcapital/go-ur/common"
 	"github.com/urcapital/go-ur/common/compiler"
