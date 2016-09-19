@@ -27,7 +27,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hashicorp/golang-lru"
+	"github.com/urcapital/urash"
 	"github.com/urcapital/go-ur/common"
 	"github.com/urcapital/go-ur/core/state"
 	"github.com/urcapital/go-ur/core/types"
@@ -38,7 +38,7 @@ import (
 	"github.com/urcapital/go-ur/params"
 	"github.com/urcapital/go-ur/pow"
 	"github.com/urcapital/go-ur/rlp"
-	"github.com/urcapital/urash"
+	"github.com/hashicorp/golang-lru"
 )
 
 func init() {
