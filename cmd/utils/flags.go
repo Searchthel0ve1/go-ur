@@ -30,7 +30,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ur-technology/urhash"
 	"github.com/ur-technology/go-ur/accounts"
 	"github.com/ur-technology/go-ur/common"
 	"github.com/ur-technology/go-ur/core"
@@ -50,6 +49,7 @@ import (
 	"github.com/ur-technology/go-ur/release"
 	"github.com/ur-technology/go-ur/rpc"
 	"github.com/ur-technology/go-ur/whisper"
+	"github.com/ur-technology/urhash"
 	"gopkg.in/urfave/cli.v1"
 )
 
@@ -711,6 +711,13 @@ func MakeSystemNode(name, version string, relconf release.Config, extra []byte, 
 		glog.V(logger.Info).Infoln("You're one of the lucky few that will try out the JIT VM (random). If you get a consensus failure please be so kind to report this incident with the block hash that failed. You can switch to the regular VM by setting --jitvm=false")
 	}
 
+	var mkCoinbase func(accman *accounts.Manager, ctx *cli.Context) common.Address
+	if ctx.GlobalIsSet(UrbaseFlag.Name) {
+		mkCoinbase = MakeUrbase
+	} else {
+		mkCoinbase = MakeEtherbase
+	}
+
 	ethConf := &eth.Config{
 		ChainConfig:             MustMakeChainConfig(ctx),
 		FastSync:                ctx.GlobalBool(FastSyncFlag.Name),
@@ -719,7 +726,7 @@ func MakeSystemNode(name, version string, relconf release.Config, extra []byte, 
 		DatabaseHandles:         MakeDatabaseHandles(),
 		NetworkId:               ctx.GlobalInt(NetworkIdFlag.Name),
 		AccountManager:          accman,
-		Etherbase:               MakeEtherbase(accman, ctx),
+		Etherbase:               mkCoinbase(accman, ctx),
 		MinerThreads:            ctx.GlobalInt(MinerThreadsFlag.Name),
 		ExtraData:               MakeMinerExtra(extra, ctx),
 		NatSpec:                 ctx.GlobalBool(NatspecEnabledFlag.Name),
