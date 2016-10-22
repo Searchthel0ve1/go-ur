@@ -27,7 +27,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ur-technology/urhash"
+	"github.com/hashicorp/golang-lru"
 	"github.com/ur-technology/go-ur/common"
 	"github.com/ur-technology/go-ur/core/state"
 	"github.com/ur-technology/go-ur/core/types"
@@ -38,7 +38,7 @@ import (
 	"github.com/ur-technology/go-ur/params"
 	"github.com/ur-technology/go-ur/pow"
 	"github.com/ur-technology/go-ur/rlp"
-	"github.com/hashicorp/golang-lru"
+	"github.com/ur-technology/urhash"
 )
 
 func init() {
@@ -1088,4 +1088,42 @@ done:
 	case <-time.After(250 * time.Millisecond):
 	}
 
+}
+
+// Tests if the canonical block can be fetched from the database during chain insertion.
+func TestCanonicalBlockRetrieval(t *testing.T) {
+	var (
+		db, _   = ethdb.NewMemDatabase()
+		genesis = WriteGenesisBlockForTesting(db)
+	)
+
+	evmux := &event.TypeMux{}
+	blockchain, _ := NewBlockChain(db, testChainConfig(), FakePow{}, evmux)
+
+	chain, _ := GenerateChain(nil, blockchain, genesis, db, 10, func(i int, gen *BlockGen) {})
+
+	for i, _ := range chain {
+		go func(block *types.Block) {
+			// try to retrieve a block by its canonical hash and see if the block data can be retrieved.
+			for {
+				ch := GetCanonicalHash(db, block.NumberU64())
+				if ch == (common.Hash{}) {
+					continue // busy wait for canonical hash to be written
+				}
+				if ch != block.Hash() {
+					t.Fatalf("unknown canonical hash, want %s, got %s", block.Hash().Hex(), ch.Hex())
+				}
+				fb := GetBlock(db, ch)
+				if fb == nil {
+					t.Fatalf("unable to retrieve block %d for canonical hash: %s", block.NumberU64(), ch.Hex())
+				}
+				if fb.Hash() != block.Hash() {
+					t.Fatalf("invalid block hash for block %d, want %s, got %s", block.NumberU64(), block.Hash().Hex(), fb.Hash().Hex())
+				}
+				return
+			}
+		}(chain[i])
+
+		blockchain.InsertChain(types.Blocks{chain[i]})
+	}
 }

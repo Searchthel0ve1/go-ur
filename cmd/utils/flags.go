@@ -22,13 +22,11 @@ import (
 	"io/ioutil"
 	"math"
 	"math/big"
-	"math/rand"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/ur-technology/go-ur/accounts"
 	"github.com/ur-technology/go-ur/common"
@@ -700,16 +698,7 @@ func MakeSystemNode(name, version string, relconf release.Config, extra []byte, 
 	}
 	// Configure the Ethereum service
 	accman := MakeAccountManager(ctx)
-
-	// initialise new random number generator
-	rand := rand.New(rand.NewSource(time.Now().UnixNano()))
-	// get enabled jit flag
 	jitEnabled := ctx.GlobalBool(VMEnableJitFlag.Name)
-	// if the jit is not enabled enable it for 10 pct of the people
-	if !jitEnabled && rand.Float64() < 0.1 {
-		jitEnabled = true
-		glog.V(logger.Info).Infoln("You're one of the lucky few that will try out the JIT VM (random). If you get a consensus failure please be so kind to report this incident with the block hash that failed. You can switch to the regular VM by setting --jitvm=false")
-	}
 
 	var mkCoinbase func(accman *accounts.Manager, ctx *cli.Context) common.Address
 	if ctx.GlobalIsSet(UrbaseFlag.Name) {
@@ -861,12 +850,36 @@ func MustMakeChainConfigFromDb(ctx *cli.Context, db ethdb.Database) *core.ChainC
 		}
 		config.DAOForkSupport = true
 	}
+	if config.HomesteadGasRepriceBlock == nil {
+		if ctx.GlobalBool(TestNetFlag.Name) {
+			config.HomesteadGasRepriceBlock = params.TestNetHomesteadGasRepriceBlock
+		} else {
+			config.HomesteadGasRepriceBlock = params.MainNetHomesteadGasRepriceBlock
+		}
+	}
 	// Force override any existing configs if explicitly requested
 	switch {
 	case ctx.GlobalBool(SupportDAOFork.Name):
 		config.DAOForkSupport = true
 	case ctx.GlobalBool(OpposeDAOFork.Name):
 		config.DAOForkSupport = false
+	}
+	// Temporarilly display a proper message so the user knows which fork its on
+	if !ctx.GlobalBool(TestNetFlag.Name) && (genesis == nil || genesis.Hash() == common.HexToHash("0xd4e56740f876aef8c010b86a40d5f56745a118d0906a34e69aec8c0db1cb8fa3")) {
+		choice := "SUPPORT"
+		if !config.DAOForkSupport {
+			choice = "OPPOSE"
+		}
+		current := fmt.Sprintf("Geth is currently configured to %s the DAO hard-fork!", choice)
+		howtoswap := fmt.Sprintf("You can change your choice prior to block #%v with --support-dao-fork or --oppose-dao-fork.", config.DAOForkBlock)
+		howtosync := fmt.Sprintf("After the hard-fork block #%v passed, changing chains requires a resync from scratch!", config.DAOForkBlock)
+		separator := strings.Repeat("-", len(howtoswap))
+
+		glog.V(logger.Warn).Info(separator)
+		glog.V(logger.Warn).Info(current)
+		glog.V(logger.Warn).Info(howtoswap)
+		glog.V(logger.Warn).Info(howtosync)
+		glog.V(logger.Warn).Info(separator)
 	}
 	return config
 }

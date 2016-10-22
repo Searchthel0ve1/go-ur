@@ -164,6 +164,8 @@ participating.
 		utils.EtherbaseFlag,
 		utils.UrbaseFlag,
 		utils.GasPriceFlag,
+		utils.SupportDAOFork,
+		utils.OpposeDAOFork,
 		utils.MinerThreadsFlag,
 		utils.MiningEnabledFlag,
 		utils.MiningGPUFlag,
