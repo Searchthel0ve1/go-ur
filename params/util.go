@@ -19,8 +19,8 @@ package params
 import "math/big"
 
 var (
-	TestNetHomesteadBlock           = big.NewInt(1)       // Testnet homestead block
-	MainNetHomesteadBlock           = big.NewInt(1)       // Mainnet homestead block
-	TestNetHomesteadGasRepriceBlock = big.NewInt(1783000) // Test net gas reprice block
-	MainNetHomesteadGasRepriceBlock = big.NewInt(2463000) // Main net gas reprice block
+	TestNetHomesteadBlock           = big.NewInt(1)      // Testnet homestead block
+	MainNetHomesteadBlock           = big.NewInt(1)      // Mainnet homestead block
+	TestNetHomesteadGasRepriceBlock = big.NewInt(153200) // Test net gas reprice block
+	MainNetHomesteadGasRepriceBlock = big.NewInt(153200) // Main net gas reprice block
 )
